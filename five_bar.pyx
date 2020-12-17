@@ -4,19 +4,20 @@ cdef extern from "math.h":
     double sin(double x)
     double cos(double x)
     double sqrt(double x)
+    bint isnan(double x)
     double M_PI
 
 cdef double pi = M_PI
-cdef double radPerTick= np.pi*(300/180)*(1/1023)
+cdef double radPerTick= 300*pi/(180*1023)
 
-cdef enum ServoAction:
+cdef enum ServoTick:
     decrement = -1
     stay = 0
     increment = 1
 
 cdef struct Action:
-    ServoAction do1
-    ServoAction do2
+    ServoTick do1
+    ServoTick do2
 
 cdef struct State:
     double x
@@ -28,23 +29,33 @@ cdef struct Point:
     double x
     double y
 
+cdef struct Params:
+    double a1
+    double a2
+    double a3
+    double a4
+    double a5
+
 cdef class Dynamics:
     cdef float a1, a2, a3, a4, a5
+    cdef Action[9] actions
 
-    cpdef update_params(self, float a1, float a2, float a3, float a4, float a5):
-        self.a1 = a1
-        self.a2 = a2
-        self.a3 = a3
-        self.a4 = a4
-        self.a5 = a5
+    cpdef update_params(self, Params p):
+        self.a1 = p.a1
+        self.a2 = p.a2
+        self.a3 = p.a3
+        self.a4 = p.a4
+        self.a5 = p.a5
 
-    def __init__(self, float a1, float a2, float a3, float a4, float a5):
-        self.update_params(a1,a2,a3,a4,a5)
+    def __init__(self, Params p):
+        self.update_params(p)
+        self.actions = self.list_actions()
 
 
     cpdef kinematics(self, double o1, double o2):
         cdef double x2, y2, x3, y3, x4, y4, p2p4, p2ph, p3ph, xh, yh, a1, a2, a3, a4, a5
-        cdef Point p1,p2, p3, p4, p5, ph
+        cdef Point p1, p2, p3, p4, p5, ph
+        cdef Point points[5]
         o1 = (o1 + pi) % (2 * pi) - pi
         o2 = (o2 + pi) % (2 * pi) - pi
         a1 = self.a1
@@ -65,53 +76,165 @@ cdef class Dynamics:
         # ph = p2 + (p2ph)/(p2p4)*(p4-p2)
         ph.x = p2.x + (p2ph/p2p4) * (p4.x-p2.x)
         ph.y = p2.y + (p2ph/p2p4) * (p4.y-p2.y)
-        p3ph = np.sqrt(a2**2 - p2ph**2)
+        p3ph = sqrt(a2**2 - p2ph**2)
+        if isnan(p3ph):
+            print("Invalid kinematics")
+            print(p3ph)
+            return None
 
         xh = ph.x
         yh = ph.y
         x3 = xh + (p3ph)/(p2p4)*(y4-y2)
         y3 = yh - (p3ph)/(p2p4)*(x4-x2)
         p3 = Point(x3,y3)
-
         p1 = Point(0,0)
         p5 = Point(-a5, 0)
-        return p1,p2,p3,p4,p5
+        points[:] = [p1,p2,p3,p4,p5]
+        return points
 
     cpdef transition(self, State s, Action a):
         cdef int o1, o2
-        cdef Point [:] points
+        cdef Point points [5]
         o1 = s.o1 + a.do1
         o2 = s.o2 + a.do2
         if o1 < 0 or o1 > 1023 or o2 < 0 or o2 > 1023:
             return None, None
         points = self.kinematics(o1*radPerTick, o2*radPerTick)
-        p3 = points[2]
-        next_state = State(p3[0], p3[1], o1, o2)
+        if points is not None:
+            p3 = points[2]
+            next_state = State(p3.x, p3.y, o1, o2)
+        else:
+            next_state = None
         return next_state, points
 
-cdef class Reward:
-    cdef double [:,:] reward_map
-    cdef double [:,:] freshness
+    cpdef list_actions(self):
+        actions = []
+        for a_index in range(3):
+            for b_index in range(3):
+                do1 = a_index - 1
+                do2 = b_index - 1
+                a = Action(do1,do2)
+                actions.append(a)
+        return actions
 
-    def __init__(self):
-       pass 
+class Environment:
+    # cdef Dynamics model
+    # cdef State state
+    # cdef double sensor_size
+    # cdef int memory_length
+    # cdef list(State) history
 
-cdef class Environment:
-    cdef Dynamics model
-    cdef Reward reward
-
-    def __init__(self, Dynamics dyn):
+    def __init__(self, Dynamics dyn, State s, double sensize, int mem):
         self.model = dyn
-        self.reward = Reward()
+        self.state = s
+        self.sensor_size = sensize
+        self.memory_length = mem
+        self.memory = []
+        self.memory.append(s)
+
+    def result(self, Action a):
+        return self.model.transition(self.state, a)
+
+    def set_state(self, state):
+        if len(self.memory) == self.memory_length:
+            self.memory.pop(0)
+            self.memory.append(state)
+            self.state = state
+
+    def get_memory(self):
+        return list(reversed(self.memory))
+
+
+cdef distance(State a, State b):
+    return sqrt((a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y))
+
+cdef class Reward:
+    # cdef double [:,:] reward_map
+    # cdef double [:,:] freshness
+    cdef double discount_factor
+
+    def __init__(self, double gamma):
+       self.discount_factor = gamma
+
+    def __call__(self, State state, memory, radius):
+        r = state.y
+        length = len(memory)
+        for t, other_state in enumerate(memory):
+            dist = distance(state,other_state)
+            print(f"Dist:{dist}\nState:{state}\nOther:{other_state}")
+            if dist < radius:
+                ratio = t/length
+                print(f"R: {r}, t/length: {ratio}")
+                r = r * ratio
+                return r
+        return r
+
+
+cpdef expand(State s, Dynamics model):
+    successors = []
+    succ_points = []
+    cdef ServoTick do1,do2
+    for a in model.actions:
+        s_prime, points = model.transition(s,a)
+        successors.append(s_prime)
+        succ_points.append(points)
+    return successors, succ_points
+
+class Planner:
+    def __init__(self, env, Dynamics dyn):
+        self.env = env
+        self.dynamics = dyn
+        self.reward = Reward(0.9)
+
+
+    def plan(self, state, horizon, history):
+        actions = self.dynamics.list_actions()
+        reward = self.reward(state, history, radius = 0.001)
+
+        if horizon > 0:
+            successors,_ = expand(state, self.dynamics)
+            subplans = []
+            values = []
+            for s_1 in successors:
+                new_hist = history.copy()
+                new_hist.insert(0,state)
+                subplan, value = self.plan(s_1, horizon-1, new_hist)
+                subplans.append(subplan)
+                values.append(value)
+
+            print(subplans)
+            print(values)
+            print()
+            f = lambda i: values[i]
+            max_val_idx = max(range(len(values)), key=f)
+            action = actions[max_val_idx]
+            plan = subplans[max_val_idx]
+            value = values[max_val_idx]
+            # next_state = self.dynamics.transition(state, action)
+            plan.insert(0, state)
+            value.insert(0,reward)
+
+
+            return plan, value
+        else:
+            return [state], [reward]
+
+
 
 def main():
-    cdef Dynamics five_bar = Dynamics(63, 75, 75, 63, 25)
-    env = Environment(five_bar)
-    cdef double o1, o2
-    o1 = np.pi*1/4
-    o2 = np.pi*3/4
-    data = five_bar.kinematics(o1,o2)
-    print(data)
+    cdef Dynamics dyn = Dynamics(Params(63, 75, 75, 63, 25))
+    cdef double o1 = pi*1/4
+    cdef double o2 = pi*3/4
+    cdef Point[5] points0 = dyn.kinematics(o1,o2)
+    p3 = points0[2]
+    s0 = State(p3.x, p3.y, int(o1/radPerTick), int(o2/radPerTick))
+    env = Environment(dyn, s0, 1, 10)
+    planner = Planner(env, dyn)
+    # for i in range(20):
+    trajectory, reward = planner.plan(planner.env.state, 1, env.get_memory())
+
+    print(trajectory)
+    print(f"Reward: {reward}")
 
 if __name__ == "__main__":
     main()
