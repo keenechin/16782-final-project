@@ -130,16 +130,16 @@ class Environment:
         self.sensor_size = sensize
         self.memory_length = mem
         self.memory = []
-        self.memory.append(s)
 
-    def result(self, Action a):
-        return self.model.transition(self.state, a)
+    def transition(self, Action a):
+        next_state,_ = self.model.transition(self.state, a)
+        self.set_state(next_state)
 
     def set_state(self, state):
         if len(self.memory) == self.memory_length:
             self.memory.pop(0)
-            self.memory.append(state)
-            self.state = state
+        self.memory.append(state)
+        self.state = state
 
     def get_memory(self):
         return list(reversed(self.memory))
@@ -159,12 +159,14 @@ cdef class Reward:
     def __call__(self, State state, memory, radius):
         r = state.y
         length = len(memory)
+        # print(f"State: {state}")
+        # print(f"History: {memory}")
         for t, other_state in enumerate(memory):
             dist = distance(state,other_state)
-            print(f"Dist:{dist}\nState:{state}\nOther:{other_state}")
+            # print(f"Dist:{dist}\nState:{state}\nOther:{other_state}")
             if dist < radius:
                 ratio = t/length
-                print(f"R: {r}, t/length: {ratio}")
+                # print(f"R: {r}, t/length: {ratio}")
                 r = r * ratio
                 return r
         return r
@@ -190,34 +192,42 @@ class Planner:
     def plan(self, state, horizon, history):
         actions = self.dynamics.list_actions()
         reward = self.reward(state, history, radius = 0.001)
+        print(state)
+        print(history)
 
         if horizon > 0:
             successors,_ = expand(state, self.dynamics)
             subplans = []
             values = []
+            controls = []
             for s_1 in successors:
                 new_hist = history.copy()
                 new_hist.insert(0,state)
-                subplan, value = self.plan(s_1, horizon-1, new_hist)
+                subplan, value, control = self.plan(s_1, horizon-1, new_hist)
                 subplans.append(subplan)
                 values.append(value)
+                controls.append(control)
 
-            print(subplans)
-            print(values)
-            print()
+
+
+            # print(subplans)
+            # print(values)
+            # print()
             f = lambda i: values[i]
             max_val_idx = max(range(len(values)), key=f)
-            action = actions[max_val_idx]
+            control = controls[max_val_idx]
             plan = subplans[max_val_idx]
             value = values[max_val_idx]
+            action = actions[max_val_idx]
             # next_state = self.dynamics.transition(state, action)
             plan.insert(0, state)
-            value.insert(0,reward)
+            value.insert(0, reward)
+            control.insert(0, action)
 
 
-            return plan, value
+            return plan, value,control
         else:
-            return [state], [reward]
+            return [state], [reward], [None]
 
 
 
@@ -230,10 +240,13 @@ def main():
     s0 = State(p3.x, p3.y, int(o1/radPerTick), int(o2/radPerTick))
     env = Environment(dyn, s0, 1, 10)
     planner = Planner(env, dyn)
-    # for i in range(20):
-    trajectory, reward = planner.plan(planner.env.state, 1, env.get_memory())
+    lifetime = 20
 
-    print(trajectory)
+    for i in range(lifetime):
+        trajectory, reward, actions = planner.plan(planner.env.state, 1, env.get_memory())
+        planner.env.transition(actions[0])
+
+        print(trajectory)
     print(f"Reward: {reward}")
 
 if __name__ == "__main__":
