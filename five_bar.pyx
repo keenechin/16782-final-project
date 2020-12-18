@@ -1,5 +1,6 @@
 import numpy as np
 cimport numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as anim
 
@@ -235,6 +236,28 @@ class Planner:
 
 
 
+def draw_traj(s_exp, s_act):
+    fig = plt.figure()
+    ax = plt.axes(xlim= (-70,70), ylim=(0,150))
+    exp_circ = matplotlib.patches.Circle((-12,0),radius=5, facecolor='b')
+    act_circ = matplotlib.patches.Circle((-12,0),radius=5, facecolor='k')
+    ax.add_artist(exp_circ)
+    ax.add_artist(act_circ)
+    ax.set_aspect('equal')
+    def init():
+        exp_circ.set_center((0,0))
+        act_circ.set_center((-12,0))
+        return exp_circ, act_circ
+
+    def animate(i):
+        exp_circ.set_center((s_exp[i]['x'], s_exp[i]['y']))
+        act_circ.set_center((s_exp[i]['x'], s_exp[i]['y']))
+        return exp_circ,act_circ
+    animation = anim.FuncAnimation(fig, animate, init_func=init, frames = len(s_exp), interval=40, blit=True)
+    animation.save('basic_animation.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+    plt.show()
+
+
 def main():
     cdef Dynamics dyn = Dynamics(Params(63, 75, 75, 63, 25))
     cdef double o1 = pi*1/4
@@ -264,6 +287,7 @@ def main():
         states_actual.append(s_act)
         errors.append(distance(s_pred,s_act))
     print(f"Total Reward: {sum(rewards)}")
+    draw_traj(states_actual,states_expected)
 
 if __name__ == "__main__":
     main()
