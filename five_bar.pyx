@@ -136,7 +136,7 @@ class Environment:
 
     def transition(self, Action a):
         next_state,_ = self.model.transition(self.state, a)
-        self.set_state(next_state)
+        return next_state
 
     def set_state(self, state):
         if len(self.memory) == self.memory_length:
@@ -152,8 +152,6 @@ cdef distance(State a, State b):
     return sqrt((a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y))
 
 cdef class Reward:
-    # cdef double [:,:] reward_map
-    # cdef double [:,:] freshness
     cdef double discount_factor
 
     def __init__(self, double gamma):
@@ -220,19 +218,20 @@ class Planner:
             control = controls[max_val_idx]
             plan = subplans[max_val_idx]
             value = values[max_val_idx]
-            if (horizon == 3):
-                print(f"Values:{values}:")
-                print(f"Chosen: Value {value} at {max_val_idx}")
+            # if (horizon == 3):
+            #     print(f"Values:{values}:")
+            #     print(f"Chosen: Value {value} at {max_val_idx}")
             action = actions[max_val_idx]
             # next_state = self.dynamics.transition(state, action)
             plan.insert(0, state)
-            value.insert(0, reward)
+            # value.insert(0, reward)
+            value = value+reward
             control.insert(0, action)
 
 
             return plan, value,control
         else:
-            return [state], [reward], [None]
+            return [state], reward, [None]
 
 
 
@@ -246,13 +245,25 @@ def main():
     env = Environment(dyn, s0, 0.2, 50)
     planner = Planner(env, dyn)
     lifetime = 20
+    states_expected = []
+    states_actual = []
+    rewards = []
+    errors = []
 
     for i in range(lifetime):
-        trajectory, reward, actions = planner.plan(planner.env.state, 3, env.get_memory())
-        planner.env.transition(actions[0])
+        plan, reward, actions = planner.plan(planner.env.state, 3, env.get_memory())
+        s_pred = plan[1]
+        states_expected.append(s_pred)
 
-        print(trajectory[0])
-    # print(f"Reward: {reward}")
+        s_act = planner.env.transition(actions[0])
+
+        r = planner.reward(s_act, planner.env.get_memory(), radius=0.2)
+        rewards.append(r)
+
+        planner.env.set_state(s_act)
+        states_actual.append(s_act)
+        errors.append(distance(s_pred,s_act))
+    print(f"Total Reward: {sum(rewards)}")
 
 if __name__ == "__main__":
     main()
