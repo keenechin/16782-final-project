@@ -1,5 +1,8 @@
 import numpy as np
 cimport numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as anim
+
 cdef extern from "math.h":
     double sin(double x)
     double cos(double x)
@@ -157,7 +160,7 @@ cdef class Reward:
        self.discount_factor = gamma
 
     def __call__(self, State state, memory, radius):
-        r = state.y
+        r = state.y+np.abs(state.x)
         length = len(memory)
         # print(f"State: {state}")
         # print(f"History: {memory}")
@@ -191,9 +194,9 @@ class Planner:
 
     def plan(self, state, horizon, history):
         actions = self.dynamics.list_actions()
-        reward = self.reward(state, history, radius = 0.001)
-        print(state)
-        print(history)
+        reward = self.reward(state, history, radius = 0.2)
+        # print(state)
+        # print(history)
 
         if horizon > 0:
             successors,_ = expand(state, self.dynamics)
@@ -211,13 +214,15 @@ class Planner:
 
 
             # print(subplans)
-            # print(values)
             # print()
             f = lambda i: values[i]
             max_val_idx = max(range(len(values)), key=f)
             control = controls[max_val_idx]
             plan = subplans[max_val_idx]
             value = values[max_val_idx]
+            if (horizon == 3):
+                print(f"Values:{values}:")
+                print(f"Chosen: Value {value} at {max_val_idx}")
             action = actions[max_val_idx]
             # next_state = self.dynamics.transition(state, action)
             plan.insert(0, state)
@@ -238,16 +243,16 @@ def main():
     cdef Point[5] points0 = dyn.kinematics(o1,o2)
     p3 = points0[2]
     s0 = State(p3.x, p3.y, int(o1/radPerTick), int(o2/radPerTick))
-    env = Environment(dyn, s0, 1, 10)
+    env = Environment(dyn, s0, 0.2, 50)
     planner = Planner(env, dyn)
     lifetime = 20
 
     for i in range(lifetime):
-        trajectory, reward, actions = planner.plan(planner.env.state, 1, env.get_memory())
+        trajectory, reward, actions = planner.plan(planner.env.state, 3, env.get_memory())
         planner.env.transition(actions[0])
 
-        print(trajectory)
-    print(f"Reward: {reward}")
+        print(trajectory[0])
+    # print(f"Reward: {reward}")
 
 if __name__ == "__main__":
     main()
