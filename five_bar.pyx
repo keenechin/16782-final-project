@@ -6,6 +6,7 @@ from PIL import Image
 import matplotlib.animation as anim
 from perlin_noise import PerlinNoise
 from os import path
+from itertools import cycle
 
 
 cdef extern from "math.h":
@@ -149,16 +150,16 @@ cdef class Dynamics:
         return actions
 
 class Environment:
-    def __init__(self, Dynamics dyn, State s, double sensize, int mem, double variance=0):
-        self.model = dyn
+    def __init__(self, Dynamics dyn, State s, double sensize, int history_length, double variance=0):
+        self.dynamics = dyn
         self.state = s
         self.sensor_size = sensize
-        self.history_length = mem
+        self.history_length = history_length
         self.history = []
         self.variance = variance
 
     def transition(self, Action a):
-        next_state,_ = self.model.transition(self.state, a)
+        next_state,_ = self.dynamics.transition(self.state, a)
         next_state['x'] + np.random.uniform(-self.variance, self.variance)
         next_state['y'] + np.random.uniform(-self.variance, self.variance)
         return next_state
@@ -217,12 +218,12 @@ class Reward:
     def get_array(self):
         return self.array
 
-cpdef expand(State s, Dynamics model):
+cpdef expand(State s, Dynamics dynamics):
     successors = []
     succ_points = []
     cdef ServoTick do1,do2
-    for a in model.actions:
-        s_prime, points = model.transition(s,a)
+    for a in dynamics.actions:
+        s_prime, points = dynamics.transition(s,a)
         successors.append(s_prime)
         succ_points.append(points)
     return successors, succ_points
@@ -281,7 +282,7 @@ class Planner:
         else:
             return [state], reward, [None]
 
-def draw_traj(s_exp, s_act, reward_array):
+def draw_traj(s_act, s_exp, reward_array):
     fig = plt.figure()
     ax = plt.axes(xlim= (-140,140), ylim=(0,150))
     exp_circ = matplotlib.patches.Circle((-12,0),radius=3, facecolor='r')
@@ -291,7 +292,7 @@ def draw_traj(s_exp, s_act, reward_array):
     ax.add_artist(act_circ)
     ax.set_aspect('equal')
     x_size,y_size = np.shape(reward_array)
-    ax.imshow(reward_array, origin='lower', extent=(-x_size//2,x_size//2,0,y_size))
+    ax.imshow(reward_array, origin='lower', cmap='viridis', extent=(-x_size//2,x_size//2,0,y_size))
     def init():
         exp_circ.set_center((0,0))
         act_circ.set_center((-12,0))
@@ -305,7 +306,12 @@ def draw_traj(s_exp, s_act, reward_array):
     animation.save('basic_animation.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
     plt.show()
 
+def drift_generator():
+    for k in cycle([1,0.95,0.9,0.85,0.8,0.75,0.7,0.75,0.8,0.85,0.9,0.95]):
+        yield k
+
 def main():
+    schedule = drift_generator()
     psi = Params(63, 75, 75, 63, 25)
     cdef Dynamics dyn = Dynamics(psi)
     cdef double o1 = pi*1/4
@@ -313,43 +319,58 @@ def main():
     cdef Point[5] points0 = dyn.kinematics(o1,o2)
     p3 = points0[2]
     s0 = State(p3.x, p3.y, int(o1/radPerTick), int(o2/radPerTick))
-    env = Environment(dyn, s0, 0.2, mem=10, variance = 1)
-    k = 0.7
-    theta = Params(psi['a1']*k-5, psi['a2']*k, psi['a3']*k, psi['a4']*k-5, psi['a5']*k)
 
     reward_file = "reward_map.npy"
     if path.exists(reward_file):
         reward_array = np.load(reward_file)
         reward_func = Reward(0.9, limits=dyn.get_range(), array=reward_array)
-        print("Reward map loaded from file")
+        print("Reward map loaded from file.")
     else:
-        print("Generating reward map")
+        print("Generating reward map.")
         reward_func = Reward(0.9, limits=dyn.get_range())
         reward_array = reward_func.get_array()
         np.save(reward_file, reward_array)
 
+
+    env = Environment(dyn, s0, 0.2, history_length=10, variance = 1)
+    k = 0.7
+    theta = Params(psi['a1']*k-5, psi['a2']*k, psi['a3']*k, psi['a4']*k-5, psi['a5']*k)
     planner = Planner(env, Dynamics(psi), reward_func)
     lifetime = 100
+    epoch_length = 10
+    adaptation_threshold = 90
+    planning_horizon = 3
+    execution_horizon = 3
+    assert(planning_horizon>=execution_horizon)
+
     states_expected = []
     states_actual = []
     rewards = []
     errors = []
+    all_errors = []
     execution_plan = []
-    planning_horizon = 1
     adapting = False
-    print(f"Running with...\nLifetime: {lifetime}\n\
-          Planning horizon: {planning_horizon}\n\
-          Adaptation status: {adapting}")
+    print(f"""Running with...
+          Execution Lifetime: {lifetime} steps
+          Drift Epoch: {epoch_length} steps
+          Planning horizon: {planning_horizon} steps
+          Steps before replanning: {execution_horizon}
+          Adaptation status: {adapting}, threshold: {adaptation_threshold}""")
 
     for i in range(lifetime):
+        if i%epoch_length == 0:
+            j = next(schedule)
+            psi_new = Params(j*psi['a1'], j*psi['a2'], j*psi['a3'], j*psi['a4'], psi['a5'])
+            planner.env.dynamics.update_params(psi_new)
+            print(f"Drifting, psi = {psi_new}")
         plan, reward, actions = planner.plan(planner.env.state, planning_horizon, planner.env.get_history())
         s_pred = plan[1]
         states_expected.append(s_pred)
 
 
-        if len(execution_plan) == 0:
+        if len(execution_plan) <= (planning_horizon - execution_horizon):
             execution_plan = [action for action in actions if action is not None]
-            print(f"Replanning, {execution_plan}")
+            # print(f"Replanning, {execution_plan}")
         a = execution_plan.pop(0)
         # print(a)
         s_act = planner.env.transition(a)
@@ -359,8 +380,10 @@ def main():
 
         planner.env.set_state(s_act)
         states_actual.append(s_act)
-        errors.append(distance(s_pred,s_act))
-        if (adapting and sum(errors)>100):
+        dist = distance(s_pred,s_act)
+        errors.append(dist)
+        all_errors.append((dist,s_pred,s_act))
+        if (adapting and sum(errors)>adaptation_threshold):
             a1,a2,a3,a4,a5 = planner.dynamics.get_params()
             new_theta = Params(0.5*(psi['a1']+a1),
                                0.5*(psi['a2']+a2),
