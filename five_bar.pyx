@@ -332,13 +332,14 @@ def main():
         np.save(reward_file, reward_array)
 
 
+    # Change paramaters below for experimentation
     env = Environment(dyn, s0, 0.2, history_length=10, variance = 1)
-    k = 0.7
-    theta = Params(psi['a1']*k-5, psi['a2']*k, psi['a3']*k, psi['a4']*k-5, psi['a5']*k)
-    planner = Planner(env, Dynamics(psi), reward_func)
+    k = 1
+    theta = Params(psi['a1']*k, psi['a2']*k, psi['a3']*k, psi['a4']*k, psi['a5']*k)
+    planner = Planner(env, Dynamics(theta), reward_func)
     lifetime = 100
     epoch_length = 10
-    adaptation_threshold = 90
+    adaptation_threshold = 10
     planning_horizon = 3
     execution_horizon = 3
     assert(planning_horizon>=execution_horizon)
@@ -349,7 +350,7 @@ def main():
     errors = []
     all_errors = []
     execution_plan = []
-    adapting = False
+    adapting = True
     print(f"""Running with...
           Execution Lifetime: {lifetime} steps
           Drift Epoch: {epoch_length} steps
@@ -360,9 +361,9 @@ def main():
     for i in range(lifetime):
         if i%epoch_length == 0:
             j = next(schedule)
-            psi_new = Params(j*psi['a1'], j*psi['a2'], j*psi['a3'], j*psi['a4'], psi['a5'])
-            planner.env.dynamics.update_params(psi_new)
-            print(f"Drifting, psi = {psi_new}")
+            new_psi = Params(j*psi['a1'], j*psi['a2'], j*psi['a3'], j*psi['a4'], psi['a5'])
+            planner.env.dynamics.update_params(new_psi)
+            print(f"Environment Drift, psi = {new_psi}")
         plan, reward, actions = planner.plan(planner.env.state, planning_horizon, planner.env.get_history())
         s_pred = plan[1]
         states_expected.append(s_pred)
@@ -385,13 +386,13 @@ def main():
         all_errors.append((dist,s_pred,s_act))
         if (adapting and sum(errors)>adaptation_threshold):
             a1,a2,a3,a4,a5 = planner.dynamics.get_params()
-            new_theta = Params(0.5*(psi['a1']+a1),
-                               0.5*(psi['a2']+a2),
-                               0.5*(psi['a3']+a3),
-                               0.5*(psi['a4']+a4),
-                               0.5*(psi['a5']+a5))
+            new_theta = Params(0.5*(new_psi['a1']+a1),
+                               0.5*(new_psi['a2']+a2),
+                               0.5*(new_psi['a3']+a3),
+                               0.5*(new_psi['a4']+a4),
+                               0.5*(new_psi['a5']+a5))
             planner.dynamics.update_params(new_theta)
-            # print(f"Replanning after {i} steps")
+            print(f"Adapting, theta = {new_theta}")
             errors = []
     print(f"Total Reward: {sum(rewards)}") 
 
