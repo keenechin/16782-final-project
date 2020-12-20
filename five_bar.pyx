@@ -3,6 +3,8 @@ cimport numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as anim
+from perlin_noise import PerlinNoise
+
 
 cdef extern from "math.h":
     double sin(double x)
@@ -55,6 +57,9 @@ cdef class Dynamics:
         self.update_params(p)
         self.actions = self.list_actions()
 
+    def get_params(self):
+            return self.a1,self.a2,self.a3,self.a4,self.a5
+
 
     cpdef kinematics(self, double o1, double o2):
         cdef double x2, y2, x3, y3, x4, y4, p2p4, p2ph, p3ph, xh, yh, a1, a2, a3, a4, a5
@@ -82,8 +87,8 @@ cdef class Dynamics:
         ph.y = p2.y + (p2ph/p2p4) * (p4.y-p2.y)
         p3ph = sqrt(a2**2 - p2ph**2)
         if isnan(p3ph):
-            print("Invalid kinematics")
-            print(p3ph)
+            # print("Invalid kinematics")
+            # print(p3ph)
             return None
 
         xh = ph.x
@@ -95,6 +100,26 @@ cdef class Dynamics:
         p5 = Point(-a5, 0)
         points[:] = [p1,p2,p3,p4,p5]
         return points
+
+    cpdef get_range(self):
+        cdef int xlim,ylim
+        cdef Point points[5]
+        cdef Point p3
+        xs = []
+        ys = []
+
+        for o1 in np.linspace(0,radPerTick*1023,100):
+            for o2 in np.linspace(0,radPerTick*1023,100):
+                output = self.kinematics(o1,o2)
+                if output is not None:
+                    points[:] = output
+                    p3 = points[2]
+                    xs.append(p3.x)
+                    ys.append(p3.y)
+        return ( (min(xs), max(xs)), (min(ys), max(ys)) )
+
+
+
 
     cpdef transition(self, State s, Action a):
         cdef int o1, o2
@@ -115,64 +140,79 @@ cdef class Dynamics:
         actions = []
         for a_index in range(3):
             for b_index in range(3):
-                do1 = a_index - 1
-                do2 = b_index - 1
+                do1 = 1*(a_index - 1)
+                do2 = 1*(b_index - 1)
                 a = Action(do1,do2)
                 actions.append(a)
         return actions
 
 class Environment:
-    # cdef Dynamics model
-    # cdef State state
-    # cdef double sensor_size
-    # cdef int memory_length
-    # cdef list(State) history
-
-    def __init__(self, Dynamics dyn, State s, double sensize, int mem):
+    def __init__(self, Dynamics dyn, State s, double sensize, int mem, double variance=0):
         self.model = dyn
         self.state = s
         self.sensor_size = sensize
-        self.memory_length = mem
-        self.memory = []
+        self.history_length = mem
+        self.history = []
+        self.variance = variance
 
     def transition(self, Action a):
         next_state,_ = self.model.transition(self.state, a)
+        next_state['x'] + np.random.uniform(-self.variance, self.variance)
+        next_state['y'] + np.random.uniform(-self.variance, self.variance)
         return next_state
 
     def set_state(self, state):
-        if len(self.memory) == self.memory_length:
-            self.memory.pop(0)
-        self.memory.append(state)
+        if len(self.history) == self.history_length:
+            self.history.pop(0)
+        self.history.append(state)
         self.state = state
 
-    def get_memory(self):
-        return list(reversed(self.memory))
-
+    def get_history(self):
+        return list(reversed(self.history))
 
 cdef distance(State a, State b):
     return sqrt((a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y))
 
-cdef class Reward:
-    cdef double discount_factor
+class Reward:
 
-    def __init__(self, double gamma):
+    def __init__(self, double gamma, limits):
        self.discount_factor = gamma
+       seed = 69
+       noise1 = PerlinNoise(octaves=8,seed=seed)
+       noise2 = PerlinNoise(octaves=16, seed=seed)
+       noise3 = PerlinNoise(octaves=32, seed=seed)
+       self.map = lambda x : noise1(x) + 0.5*noise2(x) + 0.25*noise3(x) + 2
+       self.x_range = limits[0][1]-limits[0][0]
+       self.y_range = limits[1][1]-limits[1][0]
+       self.array = np.array([[self.map([i/self.x_range, j/self.y_range])\
+                               for j in range(int(np.ceil(self.x_range)))]\
+                               for i in range(int(np.ceil(self.y_range)))])
 
-    def __call__(self, State state, memory, radius):
-        r = state.y+np.abs(state.x)
-        length = len(memory)
-        # print(f"State: {state}")
-        # print(f"History: {memory}")
-        for t, other_state in enumerate(memory):
+    def __call__(self, State state, history, radius, verbose=0):
+        r = self.map([state.x/(self.x_range), state.y/(self.y_range)])
+        length = len(history)
+        staleness = 0
+        max_staleness = (length*(length+1))/2
+        for t, other_state in enumerate(history):
             dist = distance(state,other_state)
-            # print(f"Dist:{dist}\nState:{state}\nOther:{other_state}")
+            # if (verbose>1):
+            #     print(f"Dist:{dist}\nState:{state}\nOther:{other_state}")
+            # if dist < radius:
+            #     ratio = t/length
+            #     r = r * ratio
+            #     if (verbose>0):
+            #         print(f"R: {r}, t/length: {ratio}")
+                # return r
             if dist < radius:
-                ratio = t/length
-                # print(f"R: {r}, t/length: {ratio}")
-                r = r * ratio
-                return r
-        return r
+               staleness  = staleness + (length-t)
+        reward = r*(1-staleness/(max_staleness+1))
+        return reward
 
+    def get_gamma(self):
+        return self.discount_factor
+
+    def get_array(self):
+        return self.array
 
 cpdef expand(State s, Dynamics model):
     successors = []
@@ -185,17 +225,16 @@ cpdef expand(State s, Dynamics model):
     return successors, succ_points
 
 class Planner:
-    def __init__(self, env, Dynamics dyn):
+    def __init__(self, env, Dynamics dyn, reward):
         self.env = env
         self.dynamics = dyn
-        self.reward = Reward(0.9)
+        self.reward = reward 
 
 
     def plan(self, state, horizon, history):
         actions = self.dynamics.list_actions()
         reward = self.reward(state, history, radius = 0.2)
-        # print(state)
-        # print(history)
+        print(history)
 
         if horizon > 0:
             successors,_ = expand(state, self.dynamics)
@@ -209,6 +248,11 @@ class Planner:
                 subplans.append(subplan)
                 values.append(value)
                 controls.append(control)
+
+            if horizon == 3:
+                # print(subplans)
+                # print(values)
+                pass
 
 
 
@@ -226,7 +270,7 @@ class Planner:
             # next_state = self.dynamics.transition(state, action)
             plan.insert(0, state)
             # value.insert(0, reward)
-            value = value+reward
+            value = value*self.reward.get_gamma() + reward
             control.insert(0, action)
 
 
@@ -234,16 +278,17 @@ class Planner:
         else:
             return [state], reward, [None]
 
-
-
-def draw_traj(s_exp, s_act):
+def draw_traj(s_exp, s_act, reward_array):
     fig = plt.figure()
-    ax = plt.axes(xlim= (-70,70), ylim=(0,150))
-    exp_circ = matplotlib.patches.Circle((-12,0),radius=5, facecolor='b')
-    act_circ = matplotlib.patches.Circle((-12,0),radius=5, facecolor='k')
+    ax = plt.axes(xlim= (-140,140), ylim=(0,150))
+    exp_circ = matplotlib.patches.Circle((-12,0),radius=3, facecolor='r')
+    act_circ = matplotlib.patches.Circle((-12,0),radius=2, facecolor='k')
+    ax.legend((exp_circ,act_circ),("Expected next state", "Actual next state"))
     ax.add_artist(exp_circ)
     ax.add_artist(act_circ)
     ax.set_aspect('equal')
+    x_size,y_size = np.shape(reward_array)
+    ax.imshow(reward_array, origin='lower', extent=(-x_size//2,x_size//2,0,y_size))
     def init():
         exp_circ.set_center((0,0))
         act_circ.set_center((-12,0))
@@ -251,43 +296,67 @@ def draw_traj(s_exp, s_act):
 
     def animate(i):
         exp_circ.set_center((s_exp[i]['x'], s_exp[i]['y']))
-        act_circ.set_center((s_exp[i]['x'], s_exp[i]['y']))
+        act_circ.set_center((s_act[i]['x'], s_act[i]['y']))
         return exp_circ,act_circ
     animation = anim.FuncAnimation(fig, animate, init_func=init, frames = len(s_exp), interval=40, blit=True)
     animation.save('basic_animation.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
     plt.show()
 
-
 def main():
-    cdef Dynamics dyn = Dynamics(Params(63, 75, 75, 63, 25))
+    psi = Params(63, 75, 75, 63, 25)
+    cdef Dynamics dyn = Dynamics(psi)
+    print(dyn.get_range())
     cdef double o1 = pi*1/4
     cdef double o2 = pi*3/4
     cdef Point[5] points0 = dyn.kinematics(o1,o2)
     p3 = points0[2]
     s0 = State(p3.x, p3.y, int(o1/radPerTick), int(o2/radPerTick))
-    env = Environment(dyn, s0, 0.2, 50)
-    planner = Planner(env, dyn)
-    lifetime = 20
+    env = Environment(dyn, s0, 0.2, mem=10, variance = 1)
+    k = 0.7
+    theta = Params(psi['a1']*k-5, psi['a2']*k, psi['a3']*k, psi['a4']*k-5, psi['a5']*k)
+    reward_func = Reward(0.9, dyn.get_range())
+    planner = Planner(env, Dynamics(psi), reward_func)
+    lifetime = 100
     states_expected = []
     states_actual = []
     rewards = []
     errors = []
+    execution_plan = []
+    planning_horizon = 1
+    adapting = False
 
     for i in range(lifetime):
-        plan, reward, actions = planner.plan(planner.env.state, 3, env.get_memory())
+        plan, reward, actions = planner.plan(planner.env.state, planning_horizon, planner.env.get_history())
         s_pred = plan[1]
         states_expected.append(s_pred)
 
-        s_act = planner.env.transition(actions[0])
 
-        r = planner.reward(s_act, planner.env.get_memory(), radius=0.2)
+        if len(execution_plan) == 0:
+            execution_plan = [action for action in actions if action is not None]
+            print(f"Replanning, {execution_plan}")
+        a = execution_plan.pop(0)
+        # print(a)
+        s_act = planner.env.transition(a)
+
+        r = planner.reward(s_act, planner.env.get_history(), radius=0.2, verbose=0)
         rewards.append(r)
 
         planner.env.set_state(s_act)
         states_actual.append(s_act)
         errors.append(distance(s_pred,s_act))
-    print(f"Total Reward: {sum(rewards)}")
-    draw_traj(states_actual,states_expected)
+        if (adapting and sum(errors)>100):
+            a1,a2,a3,a4,a5 = planner.dynamics.get_params()
+            new_theta = Params(0.5*(psi['a1']+a1),
+                               0.5*(psi['a2']+a2),
+                               0.5*(psi['a3']+a3),
+                               0.5*(psi['a4']+a4),
+                               0.5*(psi['a5']+a5))
+            planner.dynamics.update_params(new_theta)
+            # print(f"Replanning after {i} steps")
+            errors = []
+    print(f"Total Reward: {sum(rewards)}") 
+    reward_array = reward_func.get_array()
+    draw_traj(states_actual,states_expected,reward_array)
 
 if __name__ == "__main__":
     main()
