@@ -2,8 +2,10 @@ import numpy as np
 cimport numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from PIL import Image
 import matplotlib.animation as anim
 from perlin_noise import PerlinNoise
+from os import path
 
 
 cdef extern from "math.h":
@@ -175,7 +177,7 @@ cdef distance(State a, State b):
 
 class Reward:
 
-    def __init__(self, double gamma, limits):
+    def __init__(self, double gamma, limits, array=None):
        self.discount_factor = gamma
        seed = 69
        noise1 = PerlinNoise(octaves=8,seed=seed)
@@ -184,9 +186,10 @@ class Reward:
        self.map = lambda x : noise1(x) + 0.5*noise2(x) + 0.25*noise3(x) + 2
        self.x_range = limits[0][1]-limits[0][0]
        self.y_range = limits[1][1]-limits[1][0]
-       self.array = np.array([[self.map([i/self.x_range, j/self.y_range])\
-                               for j in range(int(np.ceil(self.x_range)))]\
-                               for i in range(int(np.ceil(self.y_range)))])
+       if array is None:
+           self.array = np.array([[self.map([i/self.x_range, j/self.y_range])\
+                                   for j in range(int(np.ceil(self.x_range)))]\
+                                   for i in range(int(np.ceil(self.y_range)))])
 
     def __call__(self, State state, history, radius, verbose=0):
         r = self.map([state.x/(self.x_range), state.y/(self.y_range)])
@@ -228,13 +231,13 @@ class Planner:
     def __init__(self, env, Dynamics dyn, reward):
         self.env = env
         self.dynamics = dyn
-        self.reward = reward 
+        self.reward = reward
 
 
     def plan(self, state, horizon, history):
         actions = self.dynamics.list_actions()
         reward = self.reward(state, history, radius = 0.2)
-        print(history)
+        # print(history)
 
         if horizon > 0:
             successors,_ = expand(state, self.dynamics)
@@ -305,7 +308,6 @@ def draw_traj(s_exp, s_act, reward_array):
 def main():
     psi = Params(63, 75, 75, 63, 25)
     cdef Dynamics dyn = Dynamics(psi)
-    print(dyn.get_range())
     cdef double o1 = pi*1/4
     cdef double o2 = pi*3/4
     cdef Point[5] points0 = dyn.kinematics(o1,o2)
@@ -314,7 +316,18 @@ def main():
     env = Environment(dyn, s0, 0.2, mem=10, variance = 1)
     k = 0.7
     theta = Params(psi['a1']*k-5, psi['a2']*k, psi['a3']*k, psi['a4']*k-5, psi['a5']*k)
-    reward_func = Reward(0.9, dyn.get_range())
+
+    reward_file = "reward_map.npy"
+    if path.exists(reward_file):
+        reward_array = np.load(reward_file)
+        reward_func = Reward(0.9, limits=dyn.get_range(), array=reward_array)
+        print("Reward map loaded from file")
+    else:
+        print("Generating reward map")
+        reward_func = Reward(0.9, limits=dyn.get_range())
+        reward_array = reward_func.get_array()
+        np.save(reward_file, reward_array)
+
     planner = Planner(env, Dynamics(psi), reward_func)
     lifetime = 100
     states_expected = []
@@ -324,6 +337,9 @@ def main():
     execution_plan = []
     planning_horizon = 1
     adapting = False
+    print(f"Running with...\nLifetime: {lifetime}\n\
+          Planning horizon: {planning_horizon}\n\
+          Adaptation status: {adapting}")
 
     for i in range(lifetime):
         plan, reward, actions = planner.plan(planner.env.state, planning_horizon, planner.env.get_history())
@@ -355,7 +371,7 @@ def main():
             # print(f"Replanning after {i} steps")
             errors = []
     print(f"Total Reward: {sum(rewards)}") 
-    reward_array = reward_func.get_array()
+
     draw_traj(states_actual,states_expected,reward_array)
 
 if __name__ == "__main__":
